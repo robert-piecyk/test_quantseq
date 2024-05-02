@@ -1,0 +1,523 @@
+---
+title: "Preproc Quantseq MO human samples Dez 2020"
+author: "Kristian Unger"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+   toc: true
+   toc_depth: 3
+   toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***
+Setting working directory
+```{r}
+setwd("/home/zyto/unger/Quantseq_Cholangio/")
+```
+
+Loading required R packages
+```{r, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(biomaRt)
+library(gplots)
+library(WriteXLS)
+library(progeny)
+library(clusterProfiler)
+library(meshes)
+library('org.Hs.eg.db')
+#library(MeSH.Hsa.eg.db, lib = "/home/rstudio/san1/KU/Rlib/")
+library(fgsea)
+library("IHW")
+library(PairedData)
+library(ggpubr)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(EnhancedVolcano)
+#library(msigdb)
+library(readxl)
+library(clusterProfiler)
+library(githubinstall)
+library(TMixClust)
+library(gdata)
+```
+
+#  Loading and preprocessing
+```{r, eval = TRUE}
+sfs <- dir("/home/zyto/unger/Quantseq_Cholangio/counts/human/",pattern=".htseqcount")
+#sfs <- sfs[-grep("Cal33",sfs)]
+
+sample.nms <- c()
+for(i in 1:length(sfs))
+{
+  
+  sample.nms.i <- strsplit(sfs[i], split = ".fastq")[[1]][1]
+  sample.nms <- c(sample.nms, sample.nms.i)
+}
+
+
+fakeSampleTable <- data.frame(sampleNames = sample.nms, sampleFiles = sfs)
+
+ddsHTSeq <- DESeqDataSetFromHTSeqCount(sampleTable = fakeSampleTable, directory = "/home/zyto/unger/Quantseq_Cholangio/counts/human/", design= ~ 1)
+
+
+ddsHTSeq@colData <- DataFrame(fakeSampleTable)
+
+em <- ddsHTSeq@assays@data$counts
+
+
+#########
+sns <- substr(colnames(em),1,8)
+
+em.a <- em
+colnames(em.a) <- sns
+
+em.a <- t(em.a)
+
+# em.a.agg.dat <- data.frame(gene=row.names(em.a),em.a)
+# em.a.agg.coll <- aggregate(. ~ gene, data = em.a.agg.dat, sum)
+# row.names(em.a.agg.coll) <- em.a.agg.coll$gene
+# em.a.agg.coll <- em.a.agg.coll[,-1]
+# colnames(em.a.agg.coll) <- colnames(em.a)
+# 
+# save(em.a.agg.coll, file="em.a.agg.coll.Rdata")
+
+load("em.a.agg.coll.Rdata")
+
+em.a.agg.coll <- t(em.a.agg.coll)
+
+ensembl=useMart("ensembl",host="uswest.ensembl.org")
+
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+filters <- "ensembl_gene_id"
+
+attributes <- c("hgnc_symbol","ensembl_gene_id")
+enst <- row.names(em.a.agg.coll)
+
+gb <- getBM(attributes = attributes, filters = filters, values = enst, mart = ensembl,uniqueRows = T, useCache = T)
+
+
+mt.e <- match(enst, gb$ensembl_gene_id)
+
+gb.m <- gb[mt.e,]
+gene.tex <- gb.m[,c(2,1)]
+
+rns <- enst
+
+is.en <- intersect(gb$ensembl_gene_id,enst)
+
+mt.e <- match(is.en, gb$ensembl_gene_id)
+mt.e <- mt.e[!is.na(mt.e)]
+
+mt.rns <- match(is.en, rns)
+em.2 <- em.a.agg.coll[mt.rns,]
+
+gb.m <- gb[mt.e,]
+gene.tex <- gb.m[,c(2,1)]
+
+all.equal(as.character(gb.m$ensembl_gene_id),as.character(row.names(em.2)))
+
+table(as.character(gb.m$ensembl_gene_id)==as.character(row.names(em.2)))
+
+row.names(em.2) <- gene.tex$hgnc_symbol
+
+# hd.pc.pca.dat <- data.frame(gene=row.names(em.2),em.2)
+# hd.pc.pca.coll <- aggregate(. ~ gene, data = hd.pc.pca.dat, sum)
+# row.names(hd.pc.pca.coll) <- hd.pc.pca.coll$gene
+# hd.pc.pca.coll <- hd.pc.pca.coll[-1,-1]
+# colnames(hd.pc.pca.coll) <- colnames(em.2)
+# 
+# save(hd.pc.pca.coll, file="hd.pc.pca.coll_hum.Rdata")
+
+load("hd.pc.pca.coll_hum.Rdata")
+
+em.3 <- hd.pc.pca.coll
+
+#####rule 30% of samples must exceed 10 counts
+ra.2 <- rowSums(em.3)
+
+ncol(em.3)
+
+keep <- ra.2 > (4*ncol(em.3))
+
+table(keep)
+
+em.3 <- em.3[keep,]
+dim(em.3)
+
+fakeSampleTable <- data.frame(sampleNames = colnames(em.3), sampleFiles = colnames(em.3))
+row.names(fakeSampleTable) <- fakeSampleTable$sampleNames
+
+pdat <- read.xls("QA_Lexogen_Cholangios_pdata_140112.xlsx")
+row.names(pdat) <- pdat$Sample.ID
+
+pdat <- pdat[row.names(fakeSampleTable),]
+
+fakeSampleTable <- cbind(fakeSampleTable, pdat)
+
+
+
+table(fakeSampleTable$Cluster)
+
+```
+
+
+Since cluster 3 is only appearing one time we remove the profile from the data
+
+```{r}
+
+fakeSampleTable.2 <- fakeSampleTable[-which(fakeSampleTable$Cluster==3),]
+em.3.2 <- em.3[,-which(fakeSampleTable$Cluster==3)]
+
+fakeSampleTable.2$Cluster <- factor(fakeSampleTable.2$Cluster)
+
+ddsHTSeq <- DESeqDataSetFromMatrix(countData =  em.3.2, colData = fakeSampleTable.2, design = ~Cluster)
+
+em.3.df <- data.frame(gene_id=row.names(em.3),em.3)
+
+write.table(em.3.df, "quantseq_Cholangio_human_250621.read.counts.txt", sep="\t", quote = F)
+
+```
+
+Our aim is to define genes that mostly differentiate the clusters. For this we focus on the 10000 most variable genes via variance selection.
+
+```{r}
+
+var.10000 <- rowVars(as.matrix(em.3.2))
+var.10000 <- order(var.10000)[1:10000]
+
+em.3.3 <- em.3.2[var.10000,]
+
+ddsHTSeq <- DESeqDataSetFromMatrix(countData =  em.3.3, colData = fakeSampleTable.2, design = ~Cluster)
+
+```
+
+
+# Generating plots
+
+```{r, fig.width=10, fig.height=10}
+vsd <- vst(ddsHTSeq,blind = T)
+
+length(row.names(vsd))
+length(unique(row.names(vsd)))
+
+ar <- assay(vsd)
+colnames(ar) <- paste0(ddsHTSeq$Tissue,"_",ddsHTSeq$Cluster)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste0(ddsHTSeq$Tissue,"_",ddsHTSeq$Cluster)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+pdf("Heatmap_of_the_sample-to-sample_distances_Cholangio_human_250621.pdf", width=18, height=18)
+par(oma=c(5,5,5,5))
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists, clustering_distance_cols=sampleDists,col=colors)
+dev.off()
+
+```
+
+## Sample distance matrix
+
+```{r}
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists, clustering_distance_cols=sampleDists,col=colors)
+```
+
+## Hierarchical heatmap
+
+```{r, fig.width=10, fig.height=10}
+var.ar <- apply(ar, MARGIN = 1, FUN = var)
+o.var.ar <- order(var.ar, decreasing = T)
+
+
+pheatmap(ar[o.var.ar[1:100],])
+
+```
+
+
+## Correlation heatmap
+
+```{r, fig.width=10, fig.height=10}
+cor.ar <- cor(ar)
+
+
+pheatmap(cor.ar)
+```
+
+Sample A_1_6_LN229 is an outlier and should be excluded!
+
+####
+
+# Export vst-log2 expressions
+
+```{r}
+ar.df <- data.frame(ar)
+
+WriteXLS("ar.df", "Quantseq_Cholangio_human_vst_log2_out_250621.xlsx", row.names = T)
+
+```
+
+### Differential expression between clusters
+
+```{r}
+
+fakeSampleTable.2$Cluster <- factor(fakeSampleTable.2$Cluster)
+
+fakeSampleTable.2$C_1_rest <- rep("rest", nrow(fakeSampleTable.2))
+fakeSampleTable.2$C_1_rest[fakeSampleTable.2$Cluster=="1"] <- "C_1"
+fakeSampleTable.2$C_1_rest<- factor(fakeSampleTable.2$C_1_rest)
+fakeSampleTable.2$C_1_rest <- relevel(fakeSampleTable.2$C_1_rest, ref = "rest")
+
+fakeSampleTable.2$C_2_rest <- rep("rest", nrow(fakeSampleTable.2))
+fakeSampleTable.2$C_2_rest[fakeSampleTable.2$Cluster=="2"] <- "C_2"
+fakeSampleTable.2$C_2_rest<- factor(fakeSampleTable.2$C_2_rest)
+fakeSampleTable.2$C_2_rest <- relevel(fakeSampleTable.2$C_2_rest, ref = "rest")
+
+fakeSampleTable.2$C_4_rest <- rep("rest", nrow(fakeSampleTable.2))
+fakeSampleTable.2$C_4_rest[fakeSampleTable.2$Cluster=="4"] <- "C_4"
+fakeSampleTable.2$C_4_rest<- factor(fakeSampleTable.2$C_4_rest)
+fakeSampleTable.2$C_4_rest <- relevel(fakeSampleTable.2$C_4_rest, ref = "rest")
+
+fakeSampleTable.2$C_5_rest <- rep("rest", nrow(fakeSampleTable.2))
+fakeSampleTable.2$C_5_rest[fakeSampleTable.2$Cluster=="5"] <- "C_5"
+fakeSampleTable.2$C_5_rest<- factor(fakeSampleTable.2$C_5_rest)
+fakeSampleTable.2$C_5_rest <- relevel(fakeSampleTable.2$C_5_rest, ref = "rest")
+
+
+ddsHTSeq_C_1_rest <- DESeqDataSetFromMatrix(countData =  em.3.3, colData = fakeSampleTable.2, design = ~C_1_rest)
+dds_C_1_rest <- DESeq(ddsHTSeq_C_1_rest)
+res_C_1_rest <- results(dds_C_1_rest)
+res_C_1_rest
+res_C_1_rest <- res_C_1_rest[!is.na(res_C_1_rest$padj),]
+res_C_1_rest.sig <- res_C_1_rest[res_C_1_rest$padj<0.1&abs(res_C_1_rest$log2FoldChange)>0.5,]
+dim(res_C_1_rest.sig)
+
+
+ddsHTSeq_C_2_rest <- DESeqDataSetFromMatrix(countData =  em.3.3, colData = fakeSampleTable.2, design = ~C_2_rest)
+dds_C_2_rest <- DESeq(ddsHTSeq_C_2_rest)
+res_C_2_rest <- results(dds_C_2_rest)
+res_C_2_rest
+res_C_2_rest <- res_C_2_rest[!is.na(res_C_2_rest$padj),]
+res_C_2_rest.sig <- res_C_2_rest[res_C_2_rest$padj<0.1&abs(res_C_2_rest$log2FoldChange)>0.5,]
+dim(res_C_2_rest.sig)
+
+ddsHTSeq_C_4_rest <- DESeqDataSetFromMatrix(countData =  em.3.3, colData = fakeSampleTable.2, design = ~C_4_rest)
+dds_C_4_rest <- DESeq(ddsHTSeq_C_4_rest)
+res_C_4_rest <- results(dds_C_4_rest)
+res_C_4_rest
+res_C_4_rest <- res_C_4_rest[!is.na(res_C_4_rest$padj),]
+res_C_4_rest.sig <- res_C_4_rest[res_C_4_rest$padj<0.1&abs(res_C_4_rest$log2FoldChange)>0.5,]
+dim(res_C_4_rest.sig)
+
+ddsHTSeq_C_5_rest <- DESeqDataSetFromMatrix(countData =  em.3.3, colData = fakeSampleTable.2, design = ~C_5_rest)
+dds_C_5_rest <- DESeq(ddsHTSeq_C_5_rest)
+res_C_5_rest <- results(dds_C_5_rest)
+res_C_5_rest
+res_C_5_rest <- res_C_5_rest[!is.na(res_C_5_rest$padj),]
+res_C_5_rest.sig <- res_C_5_rest[res_C_5_rest$padj<0.1&abs(res_C_5_rest$log2FoldChange)>0.5,]
+dim(res_C_5_rest.sig)
+
+res.list <- list(res_C_1_rest,res_C_2_rest,res_C_3_rest,res_C_4_rest,res_C_5_rest)
+
+names(res.list) <- c("C1_rest","C2_rest","C4_rest","C5_rest")
+
+
+```
+
+### Volcano plots
+
+```{r, fig.height=8, fig.width=8}
+
+rl.1 <- res.list[[1]]
+
+
+EnhancedVolcano(rl.1,
+    lab = rownames(rl.1),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 1 vs rest")
+
+pdf("Volcano_Cl1_vs_rest_250521.pdf", width = 10, height =10)
+EnhancedVolcano(rl.1,
+    lab = rownames(rl.1),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 1 vs rest")
+dev.off()
+
+rl.2 <- res.list[[2]]
+
+
+EnhancedVolcano(rl.2,
+    lab = rownames(rl.2),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 2 vs rest")
+
+pdf("Volcano_Cl2_vs_rest_250521.pdf", width = 10, height =10)
+EnhancedVolcano(rl.2,
+    lab = rownames(rl.2),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 2 vs rest")
+dev.off()
+
+
+rl.3 <- res.list[[3]]
+
+
+EnhancedVolcano(rl.3,
+    lab = rownames(rl.3),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 3 vs rest")
+
+pdf("Volcano_Cl3_vs_rest_250521.pdf", width = 10, height =10)
+EnhancedVolcano(rl.3,
+    lab = rownames(rl.3),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 3 vs rest")
+dev.off()
+
+
+rl.4 <- res.list[[4]]
+
+
+EnhancedVolcano(rl.4,
+    lab = rownames(rl.4),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 4 vs rest")
+
+pdf("Volcano_Cl4_vs_rest_250521.pdf", width = 10, height =10)
+EnhancedVolcano(rl.4,
+    lab = rownames(rl.4),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 4 vs rest")
+dev.off()
+
+rl.5 <- res.list[[5]]
+
+
+EnhancedVolcano(rl.5,
+    lab = rownames(rl.5),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 5 vs rest")
+
+pdf("Volcano_Cl5_vs_rest_250521.pdf", width = 10, height =10)
+EnhancedVolcano(rl.5,
+    lab = rownames(rl.5),
+    x = 'log2FoldChange',
+    y = 'padj',
+    FCcutoff = 0.5,
+    pCutoff = 0.1,
+    ylab="FDR",
+    drawConnectors = T,
+    labSize = 5,
+    raster = T,
+    arrowheads = F,
+    title = "Cluster 5 vs rest")
+dev.off()
+
+```
+
+```{r}
+res_C_1_rest.sig <- res_C_1_rest.sig[order(res_C_1_rest.sig$padj),]
+res_C_2_rest.sig <- res_C_2_rest.sig[order(res_C_2_rest.sig$padj),]
+res_C_4_rest.sig <- res_C_4_rest.sig[order(res_C_4_rest.sig$padj),]
+res_C_5_rest.sig <- res_C_5_rest.sig[order(res_C_5_rest.sig$padj),]
+
+hm.genes <- unique(c(row.names(res_C_4_rest.sig)[1:100]))#,row.names(res_C_3_rest.sig)[1:5],row.names(res_C_4_rest.sig)[1:5],row.names(res_C_3_rest.sig)[1:5]))
+
+hmdat_C_1 <- ar.df[row.names(res_C_1_rest.sig),]
+pheatmap(hmdat_C_1, scale="row")
+
+hmdat_C_2 <- ar.df[row.names(res_C_2_rest.sig),]
+pheatmap(hmdat_C_2, scale="row")
+
+hmdat_C_4 <- ar.df[row.names(res_C_4_rest.sig)[1:50],]
+pheatmap(hmdat_C_4, scale="row")
+
+hmdat_C_5 <- ar.df[row.names(res_C_5_rest.sig)[1:50],]
+pheatmap(hmdat_C_5, scale="row")
+
+table(dds$Cluster)
+
+```
+
+
+
+
+
